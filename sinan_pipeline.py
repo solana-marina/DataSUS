@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import socket
 from pathlib import Path
 from typing import Any
@@ -51,6 +52,13 @@ CITY_COLUMN_RULES = {
     "NTRA": "ID_MUNICIP",
 }
 
+DATE_COLUMN_CANDIDATES = [
+    "DT_NOTIFIC",
+    "DT_SIN_PRI",
+    "DT_DIAG",
+    "DT_INVEST",
+]
+
 AGRAVO_LABELS = {
     "CHAG": "Doenca de Chagas Aguda",
     "COQU": "Coqueluche",
@@ -89,6 +97,7 @@ def build_expected_file_map(
     agravos_alvo: list[str] | None = None,
     anos_alvo: list[int] | None = None,
     catalog_timeout_seconds: float = 15.0,
+    use_remote_catalog: bool = True,
 ) -> tuple[Any, dict[str, Any]]:
     agravos = list(agravos_alvo or AGRAVOS_ALVO)
     anos = list(anos_alvo or ANOS_ALVO)
@@ -101,17 +110,18 @@ def build_expected_file_map(
     }
 
     sinan_db = None
-    previous_timeout = socket.getdefaulttimeout()
-    try:
-        socket.setdefaulttimeout(catalog_timeout_seconds)
-        sinan_db = SINAN().load()
-        remote_files = sinan_db.get_files(dis_code=agravos, year=anos)
-        for file_ref in remote_files:
-            expected_file_map[Path(str(file_ref)).stem] = file_ref
-    except Exception:
-        sinan_db = None
-    finally:
-        socket.setdefaulttimeout(previous_timeout)
+    if use_remote_catalog:
+        previous_timeout = socket.getdefaulttimeout()
+        try:
+            socket.setdefaulttimeout(catalog_timeout_seconds)
+            sinan_db = SINAN().load()
+            remote_files = sinan_db.get_files(dis_code=agravos, year=anos)
+            for file_ref in remote_files:
+                expected_file_map[Path(str(file_ref)).stem] = file_ref
+        except Exception:
+            sinan_db = None
+        finally:
+            socket.setdefaulttimeout(previous_timeout)
 
     if len(expected_file_map) != expected_total:
         raise ValueError(
@@ -306,6 +316,111 @@ def repair_downloads(
     }
 
 
+def summarize_audit(audit_df: pd.DataFrame) -> pd.DataFrame:
+    if audit_df.empty:
+        return pd.DataFrame(columns=["status", "needs_download", "needs_reconvert", "arquivos"])
+
+    return (
+        audit_df.groupby(["status", "needs_download", "needs_reconvert"], as_index=False)
+        .size()
+        .rename(columns={"size": "arquivos"})
+        .sort_values(["needs_download", "needs_reconvert", "status"], ascending=[False, False, True])
+        .reset_index(drop=True)
+    )
+
+
+def run_data_update(
+    agravos_alvo: list[str] | None = None,
+    anos_alvo: list[int] | None = None,
+    data_dir: Path | str = DATA_DIR,
+    parquet_dir: Path | str = PARQUET_DIR,
+    catalog_timeout_seconds: float = 15.0,
+    download_timeout_seconds: float = 30.0,
+    repair: bool = True,
+) -> dict[str, Any]:
+    sinan_db, expected_file_map = build_expected_file_map(
+        agravos_alvo,
+        anos_alvo,
+        catalog_timeout_seconds=catalog_timeout_seconds,
+        use_remote_catalog=repair,
+    )
+    initial_audit_df = audit_downloads(expected_file_map, data_dir, parquet_dir)
+
+    repair_result = {
+        "downloaded_paths": [],
+        "downloaded_stems": [],
+        "download_errors_df": pd.DataFrame(),
+        "converted_stems": [],
+        "conversion_errors_df": pd.DataFrame(),
+    }
+    if repair:
+        repair_result = repair_downloads(
+            sinan_db,
+            expected_file_map,
+            initial_audit_df,
+            data_dir,
+            parquet_dir,
+            download_timeout_seconds=download_timeout_seconds,
+        )
+
+    final_audit_df = audit_downloads(expected_file_map, data_dir, parquet_dir)
+    return {
+        "sinan_db_available": sinan_db is not None,
+        "expected_file_map": expected_file_map,
+        "initial_audit_df": initial_audit_df,
+        "initial_summary_df": summarize_audit(initial_audit_df),
+        "repair_result": repair_result,
+        "final_audit_df": final_audit_df,
+        "final_summary_df": summarize_audit(final_audit_df),
+    }
+
+
+def _print_data_update_report(result: dict[str, Any]) -> None:
+    expected_count = len(result["expected_file_map"])
+    initial_pending = int(
+        (
+            result["initial_audit_df"]["needs_download"]
+            | result["initial_audit_df"]["needs_reconvert"]
+        ).sum()
+    )
+    final_pending = int(
+        (
+            result["final_audit_df"]["needs_download"]
+            | result["final_audit_df"]["needs_reconvert"]
+        ).sum()
+    )
+    repair_result = result["repair_result"]
+
+    print(f"Arquivos esperados: {expected_count}")
+    print(f"Catalogo remoto disponivel: {result['sinan_db_available']}")
+    print("\nResumo inicial:")
+    print(result["initial_summary_df"].to_string(index=False))
+    print(f"Pendencias iniciais: {initial_pending}")
+
+    print("\nCorrecao incremental:")
+    print(f"Baixados: {len(repair_result['downloaded_stems'])}")
+    print(f"Convertidos: {len(repair_result['converted_stems'])}")
+    if not repair_result["download_errors_df"].empty:
+        print("\nFalhas de download:")
+        print(repair_result["download_errors_df"].to_string(index=False))
+    if not repair_result["conversion_errors_df"].empty:
+        print("\nFalhas de conversao:")
+        print(repair_result["conversion_errors_df"].to_string(index=False))
+
+    print("\nResumo final:")
+    print(result["final_summary_df"].to_string(index=False))
+    print(f"Pendencias finais: {final_pending}")
+
+    pending_df = result["final_audit_df"].loc[
+        result["final_audit_df"]["needs_download"]
+        | result["final_audit_df"]["needs_reconvert"],
+        ["stem", "status", "csv_state", "parquet_state"],
+    ]
+    if not pending_df.empty:
+        print("\nArquivos ainda pendentes:")
+        print(pending_df.to_string(index=False))
+
+
 def choose_city_column(code: str, columns: list[str]) -> str | None:
     explicit_column = CITY_COLUMN_RULES.get(code)
     if explicit_column and explicit_column in columns:
@@ -313,6 +428,221 @@ def choose_city_column(code: str, columns: list[str]) -> str | None:
     if DEFAULT_CITY_COLUMN in columns:
         return DEFAULT_CITY_COLUMN
     return None
+
+
+def choose_date_column(columns: list[str]) -> str | None:
+    for column in DATE_COLUMN_CANDIDATES:
+        if column in columns:
+            return column
+    return None
+
+
+def parse_sinan_dates(series: pd.Series) -> pd.Series:
+    date_text = (
+        series.astype("string")
+        .str.strip()
+        .str.replace(r"\.0$", "", regex=True)
+    )
+    parsed_dates = pd.to_datetime(pd.Series(pd.NaT, index=series.index))
+    compact_mask = date_text.str.fullmatch(r"\d{8}", na=False)
+    parsed_dates.loc[compact_mask] = pd.to_datetime(
+        date_text.loc[compact_mask],
+        format="%Y%m%d",
+        errors="coerce",
+    )
+    parsed_dates.loc[~compact_mask] = pd.to_datetime(
+        date_text.loc[~compact_mask],
+        format="mixed",
+        errors="coerce",
+        dayfirst=True,
+    )
+    return parsed_dates
+
+
+def build_monthly_city_counts(
+    audit_df: pd.DataFrame,
+    city_codes: dict[str, int] | None = None,
+    data_dir: Path | str = DATA_DIR,
+    agravo_labels: dict[str, str] | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    city_codes = city_codes or CITY_CODES
+    agravo_labels = agravo_labels or AGRAVO_LABELS
+
+    records: list[dict[str, Any]] = []
+    issues: list[dict[str, Any]] = []
+
+    for row in audit_df.itertuples(index=False):
+        if row.status == "empty":
+            for city_name in city_codes:
+                for period in pd.period_range(f"{row.ano}-01", f"{row.ano}-12", freq="M"):
+                    records.append(
+                        {
+                            "agravo": row.agravo,
+                            "agravo_nome": agravo_labels.get(row.agravo, row.agravo),
+                            "ano": int(period.year),
+                            "mes": int(period.month),
+                            "periodo": str(period),
+                            "cidade": city_name,
+                            "casos": 0,
+                            "cidade_coluna": CITY_COLUMN_RULES.get(row.agravo, DEFAULT_CITY_COLUMN),
+                            "data_coluna": None,
+                            "arquivo_status": row.status,
+                        }
+                    )
+            continue
+
+        if row.status != "present":
+            issues.append(
+                {
+                    "stem": row.stem,
+                    "agravo": row.agravo,
+                    "ano": row.ano,
+                    "issue": f"skipped_status: {row.status}",
+                }
+            )
+            continue
+
+        csv_path = Path(row.csv_path)
+        try:
+            columns = pd.read_csv(csv_path, nrows=0).columns.tolist()
+        except Exception as exc:
+            issues.append(
+                {
+                    "stem": row.stem,
+                    "agravo": row.agravo,
+                    "ano": row.ano,
+                    "issue": f"header_read_failed: {type(exc).__name__}: {exc}",
+                }
+            )
+            continue
+
+        city_column = choose_city_column(row.agravo, columns)
+        date_column = choose_date_column(columns)
+        if city_column is None or date_column is None:
+            issues.append(
+                {
+                    "stem": row.stem,
+                    "agravo": row.agravo,
+                    "ano": row.ano,
+                    "issue": "city_or_date_column_not_found",
+                }
+            )
+            continue
+
+        try:
+            file_df = pd.read_csv(csv_path, usecols=[city_column, date_column], low_memory=False)
+        except Exception as exc:
+            issues.append(
+                {
+                    "stem": row.stem,
+                    "agravo": row.agravo,
+                    "ano": row.ano,
+                    "issue": f"read_failed: {type(exc).__name__}: {exc}",
+                }
+            )
+            continue
+
+        file_df[city_column] = pd.to_numeric(file_df[city_column], errors="coerce")
+        file_df[date_column] = parse_sinan_dates(file_df[date_column])
+        file_df = file_df.loc[file_df[date_column].notna()].copy()
+        file_df["periodo"] = file_df[date_column].dt.to_period("M").astype(str)
+
+        complete_periods = pd.period_range(f"{row.ano}-01", f"{row.ano}-12", freq="M").astype(str)
+        for city_name, city_code in city_codes.items():
+            city_series = (
+                file_df.loc[file_df[city_column] == city_code]
+                .groupby("periodo")
+                .size()
+                .reindex(complete_periods, fill_value=0)
+            )
+            for period, cases in city_series.items():
+                period_obj = pd.Period(period, freq="M")
+                records.append(
+                    {
+                        "agravo": row.agravo,
+                        "agravo_nome": agravo_labels.get(row.agravo, row.agravo),
+                        "ano": int(period_obj.year),
+                        "mes": int(period_obj.month),
+                        "periodo": str(period_obj),
+                        "cidade": city_name,
+                        "casos": int(cases),
+                        "cidade_coluna": city_column,
+                        "data_coluna": date_column,
+                        "arquivo_status": row.status,
+                    }
+                )
+
+    monthly_counts_df = pd.DataFrame(records)
+    if not monthly_counts_df.empty:
+        monthly_counts_df = monthly_counts_df.sort_values(
+            ["cidade", "agravo", "ano", "mes"]
+        ).reset_index(drop=True)
+
+    return monthly_counts_df, pd.DataFrame(issues)
+
+
+def build_candidate_inventory(monthly_counts_df: pd.DataFrame) -> pd.DataFrame:
+    if monthly_counts_df.empty:
+        return pd.DataFrame()
+
+    expected_months = monthly_counts_df["periodo"].nunique()
+    total_by_period = (
+        monthly_counts_df.groupby(["agravo", "agravo_nome", "periodo"], as_index=False)["casos"]
+        .sum()
+        .sort_values(["agravo", "periodo"])
+    )
+
+    records: list[dict[str, Any]] = []
+    for (agravo, agravo_nome), group in total_by_period.groupby(["agravo", "agravo_nome"]):
+        values = group["casos"].astype(float)
+        total_cases = int(values.sum())
+        zero_months = int((values == 0).sum())
+        active_months = int((values > 0).sum())
+        first_half = group.loc[group["periodo"] <= "2018-12", "casos"].sum()
+        second_half = group.loc[group["periodo"] >= "2019-01", "casos"].sum()
+        month_means = (
+            group.assign(mes=lambda df: pd.PeriodIndex(df["periodo"], freq="M").month)
+            .groupby("mes")["casos"]
+            .mean()
+        )
+        seasonality_ratio = 0.0
+        if month_means.mean() > 0:
+            seasonality_ratio = float(month_means.std(ddof=0) / month_means.mean())
+        trend_delta = int(second_half - first_half)
+
+        records.append(
+            {
+                "agravo": agravo,
+                "agravo_nome": agravo_nome,
+                "total_casos": total_cases,
+                "media_mensal": round(float(values.mean()), 2),
+                "max_mensal": int(values.max()),
+                "meses_com_caso": active_months,
+                "meses_zerados": zero_months,
+                "pct_meses_zerados": round(zero_months / len(group) * 100, 1),
+                "completude_mensal_pct": round(len(group) / expected_months * 100, 1),
+                "casos_2014_2018": int(first_half),
+                "casos_2019_2024": int(second_half),
+                "variacao_abs_periodos": trend_delta,
+                "indice_sazonalidade": round(seasonality_ratio, 2),
+            }
+        )
+
+    inventory_df = pd.DataFrame(records)
+    if inventory_df.empty:
+        return inventory_df
+
+    inventory_df["score_modelagem"] = (
+        inventory_df["total_casos"].rank(pct=True) * 40
+        + (100 - inventory_df["pct_meses_zerados"]).rank(pct=True) * 30
+        + inventory_df["max_mensal"].rank(pct=True) * 15
+        + inventory_df["meses_com_caso"].rank(pct=True) * 15
+    ).round(1)
+
+    return inventory_df.sort_values(
+        ["score_modelagem", "total_casos"],
+        ascending=[False, False],
+    ).reset_index(drop=True)
 
 
 def build_city_counts(
@@ -470,3 +800,46 @@ def plot_rankings(
             ax.text(value, y_pos, f" {value}", va="center", fontsize=9)
 
     return fig, axes
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Audita, baixa e valida os arquivos SINAN usados no projeto."
+    )
+    parser.add_argument("--data-dir", default=str(DATA_DIR), help="Diretorio dos CSVs.")
+    parser.add_argument(
+        "--parquet-dir",
+        default=str(PARQUET_DIR),
+        help="Diretorio dos parquet baixados pelo PySUS.",
+    )
+    parser.add_argument(
+        "--catalog-timeout",
+        type=float,
+        default=15.0,
+        help="Timeout em segundos para carregar o catalogo remoto.",
+    )
+    parser.add_argument(
+        "--download-timeout",
+        type=float,
+        default=30.0,
+        help="Timeout em segundos para cada tentativa de download.",
+    )
+    parser.add_argument(
+        "--skip-repair",
+        action="store_true",
+        help="Executa apenas a auditoria local, sem baixar ou converter arquivos.",
+    )
+    args = parser.parse_args()
+
+    result = run_data_update(
+        data_dir=args.data_dir,
+        parquet_dir=args.parquet_dir,
+        catalog_timeout_seconds=args.catalog_timeout,
+        download_timeout_seconds=args.download_timeout,
+        repair=not args.skip_repair,
+    )
+    _print_data_update_report(result)
+
+
+if __name__ == "__main__":
+    main()
