@@ -42,7 +42,7 @@ AGRAVOS_ALVO = [
 ]
 
 ANOS_ALVO = list(range(2014, 2025))
-CITY_CODES = {"Ilheus": 291360, "Itabuna": 291480}
+CITY_CODES = {"Ilhéus": 291360, "Itabuna": 291480}
 DATA_DIR = Path("Dados")
 PARQUET_DIR = Path.home() / "pysus"
 
@@ -60,32 +60,32 @@ DATE_COLUMN_CANDIDATES = [
 ]
 
 AGRAVO_LABELS = {
-    "CHAG": "Doenca de Chagas Aguda",
+    "CHAG": "Doença de Chagas Aguda",
     "COQU": "Coqueluche",
     "DERM": "Dermatoses ocupacionais",
     "DIFT": "Difteria",
     "ESQU": "Esquistossomose",
-    "EXAN": "Doencas exantematicas",
+    "EXAN": "Doenças exantemáticas",
     "FMAC": "Febre Maculosa",
     "FTIF": "Febre Tifoide",
-    "HANS": "Hanseniase",
+    "HANS": "Hanseníase",
     "HANT": "Hantavirose",
     "LEIV": "Leishmaniose Visceral",
     "LEPT": "Leptospirose",
     "LTAN": "Leishmaniose Tegumentar Americana",
-    "MALA": "Malaria",
+    "MALA": "Malária",
     "MENI": "Meningite",
-    "NTRA": "Notificacao de Tracoma",
+    "NTRA": "Notificação de Tracoma",
     "PEST": "Peste",
-    "PFAN": "Paralisia Flacida Aguda",
+    "PFAN": "Paralisia Flácida Aguda",
     "RAIV": "Raiva",
-    "SIFA": "Sifilis Adquirida",
-    "SIFC": "Sifilis Congenita",
-    "SIFG": "Sifilis em Gestante",
-    "SRC": "Sindrome da Rubeola Congenita",
-    "TETA": "Tetano Acidental",
-    "TETN": "Tetano Neonatal",
-    "TRAC": "Inquerito de Tracoma",
+    "SIFA": "Sífilis Adquirida",
+    "SIFC": "Sífilis Congênita",
+    "SIFG": "Sífilis em Gestante",
+    "SRC": "Síndrome da Rubéola Congênita",
+    "TETA": "Tétano Acidental",
+    "TETN": "Tétano Neonatal",
+    "TRAC": "Inquérito de Tracoma",
     "TUBE": "Tuberculose",
     "VARC": "Varicela",
 }
@@ -392,24 +392,24 @@ def _print_data_update_report(result: dict[str, Any]) -> None:
     repair_result = result["repair_result"]
 
     print(f"Arquivos esperados: {expected_count}")
-    print(f"Catalogo remoto disponivel: {result['sinan_db_available']}")
+    print(f"Catálogo remoto disponível: {result['sinan_db_available']}")
     print("\nResumo inicial:")
     print(result["initial_summary_df"].to_string(index=False))
-    print(f"Pendencias iniciais: {initial_pending}")
+    print(f"Pendências iniciais: {initial_pending}")
 
-    print("\nCorrecao incremental:")
+    print("\nCorreção incremental:")
     print(f"Baixados: {len(repair_result['downloaded_stems'])}")
     print(f"Convertidos: {len(repair_result['converted_stems'])}")
     if not repair_result["download_errors_df"].empty:
         print("\nFalhas de download:")
         print(repair_result["download_errors_df"].to_string(index=False))
     if not repair_result["conversion_errors_df"].empty:
-        print("\nFalhas de conversao:")
+        print("\nFalhas de conversão:")
         print(repair_result["conversion_errors_df"].to_string(index=False))
 
     print("\nResumo final:")
     print(result["final_summary_df"].to_string(index=False))
-    print(f"Pendencias finais: {final_pending}")
+    print(f"Pendências finais: {final_pending}")
 
     pending_df = result["final_audit_df"].loc[
         result["final_audit_df"]["needs_download"]
@@ -769,7 +769,7 @@ def _build_top10(city_counts_df: pd.DataFrame, city_name: str | None = None) -> 
 def build_rankings(
     city_counts_df: pd.DataFrame,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    ranking_ilheus_df = _build_top10(city_counts_df, "Ilheus")
+    ranking_ilheus_df = _build_top10(city_counts_df, "Ilhéus")
     ranking_itabuna_df = _build_top10(city_counts_df, "Itabuna")
     ranking_geral_df = _build_top10(city_counts_df, None)
     return ranking_ilheus_df, ranking_itabuna_df, ranking_geral_df
@@ -782,9 +782,9 @@ def plot_rankings(
 ) -> tuple[plt.Figure, Any]:
     fig, axes = plt.subplots(1, 3, figsize=(21, 8), constrained_layout=True)
     chart_config = [
-        (axes[0], ranking_ilheus_df, "Top 10 - Ilheus", "#1f77b4"),
+        (axes[0], ranking_ilheus_df, "Top 10 - Ilhéus", "#1f77b4"),
         (axes[1], ranking_itabuna_df, "Top 10 - Itabuna", "#ff7f0e"),
-        (axes[2], ranking_geral_df, "Top 10 - Ilheus + Itabuna", "#2ca02c"),
+        (axes[2], ranking_geral_df, "Top 10 - Ilhéus + Itabuna", "#2ca02c"),
     ]
 
     for ax, ranking_df, title, color in chart_config:
@@ -796,7 +796,7 @@ def plot_rankings(
         plot_df = ranking_df.sort_values("casos")
         ax.barh(plot_df["agravo_exibicao"], plot_df["casos"], color=color, alpha=0.9)
         ax.set_title(title)
-        ax.set_xlabel("Numero de notificacoes")
+        ax.set_xlabel("Número de notificações")
         ax.set_ylabel("")
 
         for y_pos, value in enumerate(plot_df["casos"]):
@@ -809,17 +809,17 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Audita, baixa e valida os arquivos SINAN usados no projeto."
     )
-    parser.add_argument("--data-dir", default=str(DATA_DIR), help="Diretorio dos CSVs.")
+    parser.add_argument("--data-dir", default=str(DATA_DIR), help="Diretório dos CSVs.")
     parser.add_argument(
         "--parquet-dir",
         default=str(PARQUET_DIR),
-        help="Diretorio dos parquet baixados pelo PySUS.",
+        help="Diretório dos parquet baixados pelo PySUS.",
     )
     parser.add_argument(
         "--catalog-timeout",
         type=float,
         default=15.0,
-        help="Timeout em segundos para carregar o catalogo remoto.",
+        help="Timeout em segundos para carregar o catálogo remoto.",
     )
     parser.add_argument(
         "--download-timeout",
