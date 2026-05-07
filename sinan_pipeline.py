@@ -633,10 +633,13 @@ def build_candidate_inventory(monthly_counts_df: pd.DataFrame) -> pd.DataFrame:
         return inventory_df
 
     inventory_df["score_modelagem"] = (
-        inventory_df["total_casos"].rank(pct=True) * 40
-        + (100 - inventory_df["pct_meses_zerados"]).rank(pct=True) * 30
-        + inventory_df["max_mensal"].rank(pct=True) * 15
-        + inventory_df["meses_com_caso"].rank(pct=True) * 15
+        inventory_df["total_casos"].rank(pct=True) * 30
+        + inventory_df["media_mensal"].rank(pct=True) * 15
+        + (100 - inventory_df["pct_meses_zerados"]).rank(pct=True) * 20
+        + inventory_df["meses_com_caso"].rank(pct=True) * 10
+        + inventory_df["max_mensal"].rank(pct=True) * 10
+        + inventory_df["variacao_abs_periodos"].abs().rank(pct=True) * 10
+        + inventory_df["indice_sazonalidade"].rank(pct=True) * 5
     ).round(1)
 
     return inventory_df.sort_values(
