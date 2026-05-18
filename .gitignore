@@ -1,4 +1,6 @@
-/__pycache__
-/.venv
-/.vscode
-/Dados
+__pycache__/
+.venv/
+.vscode/
+Dados/
+Referencias/
+Sifilis/dados_processados/
